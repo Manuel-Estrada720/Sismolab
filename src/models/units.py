@@ -2,8 +2,8 @@ from decimal import Decimal, InvalidOperation
 
 
 def to_tenths(value) -> int:
-    """Convert a decimal value (e.g. "5.2" or 5.2) to tenths (52).
-    Rejects non-finite numbers and values with more than one decimal."""
+    """Convert a decimal value (e.g. "5.2" or 5.2) to tenths (52)
+    Rejects non-finite numbers and values with more than one decimal"""
     try:
         d = Decimal(str(value))
     except InvalidOperation:
