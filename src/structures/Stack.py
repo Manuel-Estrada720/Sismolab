@@ -1,47 +1,33 @@
-from collections import deque
 
+"""
+A stack is a structure that allows for storing history and undoing actions, 
+operating according to stack principles.
+"""
 
-class Queue:
-
+class Stack:
     def __init__(self):
-        self.items = deque()
+        self.items = []
 
+    def push(self, nodo):
+        self.items.append(nodo)
 
-    def enqueue(self, item):
-        self.items.append(item)
-
-
-    def dequeue(self):
-
-        if self.is_empty():
-            raise IndexError("The queue is empty")
-
-        return self.items.popleft()
-
-
-    def peek(self):
-
+    def pop(self):
         if self.is_empty():
             return None
 
-        return self.items[0]
+        return self.items.pop()
 
+    def peek(self):
+        if self.is_empty():
+            return None
+
+        return self.items[-1]
 
     def is_empty(self):
-
         return len(self.items) == 0
 
-
     def size(self):
-
         return len(self.items)
 
-
-    def to_list(self):
-
-        return list(self.items)
-
-
     def clear(self):
-
         self.items.clear()
