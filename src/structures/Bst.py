@@ -3,7 +3,7 @@ from Node import Node
 from typing import Optional, Tuple, Any
 
 
-class BinarySearchTree:
+class BSTTree:
 
     def __init__(self):
         self.root = None
