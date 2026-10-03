@@ -12,11 +12,12 @@ REJECTED = "REJECTED"
 INVALID = "INVALID"
 
 class ReportProcessor:
-    def __init__(self, registry, tree, zone_map, clock):
+    def __init__(self, registry, tree, zone_map, clock, associations=None):
         self.registry = registry
         self.tree = tree
         self.zone_map = zone_map
         self.clock = clock              # Simulation clock (epoch seconds)
+        self.associations = associations
         self.counters = {"corrections": 0, "discarded": 0, "conflicts": 0}
 
     def process(self, report):
@@ -54,6 +55,7 @@ class ReportProcessor:
         
         self.registry.add(record)
         self.tree.insert(record)
+        self._refresh_associations(report.data.event_id)
         return (CREATED, "New event created with revision " + str(report.revision))
     
     def _confirm(self, record, report):
@@ -100,4 +102,9 @@ class ReportProcessor:
             message = "Archived event reactivated as pending"
 
         self.counters["corrections"] += 1
+        self._refresh_associations(report.data.event_id)
         return (result, message)
+    
+    def _refresh_associations(self, event_id):
+        if self.associations is not None:
+            self.associations.on_event_changed(event_id)
