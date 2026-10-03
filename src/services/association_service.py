@@ -1,4 +1,4 @@
-from src.models.event_record import DELETED
+from ..models.event_record import DELETED
 
 
 class AssociationService:
