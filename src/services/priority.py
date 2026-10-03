@@ -1,5 +1,5 @@
-from models.event_data import EventData
-from models.zone import ZoneMap
+from src.models.event_data import EventData
+from src.models.zone import ZoneMap
 
 HIGH, MEDIUM, LOW = 3, 2, 1
 
