@@ -1,5 +1,5 @@
 
-from Node import Node
+from .Node import Node
 from typing import Optional, Tuple, Any
 
 
