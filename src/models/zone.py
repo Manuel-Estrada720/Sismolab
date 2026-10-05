@@ -26,3 +26,15 @@ class ZoneMap:
             if zone.populated and zone.contains(x10, y10):
                 return True
         return False
+
+
+def default_zones():
+    # Zones of the fictitious territory used when a scenario has none.
+    # Coordinates are in tenths of km (300.0 km -> 3000)
+    return ZoneMap([
+        Zone("Ciudad Norte", True, 1000, 6000, 4000, 9000),
+        Zone("Valle Central", True, 4000, 3000, 7000, 6000),
+        Zone("Puerto Sur", True, 6000, 0, 9000, 2000),
+        Zone("Sierra Alta", False, 0, 0, 4000, 6000),
+        Zone("Llanura Este", False, 7000, 2000, 10000, 10000),
+    ])

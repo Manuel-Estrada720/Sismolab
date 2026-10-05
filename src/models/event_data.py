@@ -2,15 +2,20 @@ class EventData:
     # Physical data of an earthquake. Decimals are stored as tenths (5.2 -> 52)
 
     def __init__(self, event_id, magnitude10, depth10, x10, y10, time_epoch):
-        # Validate before saving anything
+        # Validate before saving anything. Messages are shown in the GUI (Spanish)
+        for value in (event_id, magnitude10, depth10, x10, y10, time_epoch):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError("Los datos del evento deben ser números enteros en décimas")
         if not 1 <= event_id <= 999999:
-            raise ValueError("Id must be between 1 and 999999")
+            raise ValueError("El identificador debe estar entre 1 y 999999")
         if not -20 <= magnitude10 <= 100:
-            raise ValueError("Magnitude must be between -2.0 and 10.0")
+            raise ValueError("La magnitud debe estar entre -2.0 y 10.0")
         if not 0 <= depth10 <= 7000:
-            raise ValueError("Depth must be between 0.0 and 700.0 km")
+            raise ValueError("La profundidad debe estar entre 0.0 y 700.0 km")
         if not (0 <= x10 <= 10000 and 0 <= y10 <= 10000):
-            raise ValueError("Coordinates must be between 0.0 and 1000.0 km")
+            raise ValueError("Las coordenadas deben estar entre 0.0 y 1000.0 km")
+        if time_epoch < 0:
+            raise ValueError("La fecha de ocurrencia no es válida")
 
         self.event_id = event_id
         self.magnitude10 = magnitude10
