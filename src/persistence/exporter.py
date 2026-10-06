@@ -1,4 +1,18 @@
-"""JSON serialization and reconstruction for SismoLab scenarios."""
+"""JSON serialization and reconstruction for SismoLab scenarios.
+
+Schema version 2 (written by this module):
+- Dates use ISO 8601 UTC text ("2026-09-07T10:00:00Z").
+- Magnitude, depth and coordinates use a decimal point (5.2), but inside the
+  program they are integers in tenths (52) to keep comparisons exact.
+- The AVL is saved by topology: root id plus left/right ids of every node.
+
+Files with schema version 1 (epoch seconds and tenths) are still accepted:
+they are converted to version 2 before validation.
+
+Every loader builds a brand new ScenarioState. The caller replaces its
+current scenario only when loading succeeds, so a bad file never leaves a
+half-loaded scenario.
+"""
 
 from __future__ import annotations
 
@@ -8,318 +22,239 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from structures import Node
+from ..models.event_data import EventData
+from ..models.event_record import ACTIVE, EventRecord
+from ..models.event_registry import EventRegistry
+from ..models.report import Report
+from ..models.scenario_state import DEFAULT_STATIONS, METRIC_NAMES, ROTATION_NAMES, ScenarioState
+from ..models.units import format_utc, from_tenths, parse_utc, to_tenths
+from ..models.zone import Zone, ZoneMap, default_zones
+from ..services.association_service import AssociationService
+from ..services.priority import calculate_priority
+from ..services.tree_info import key_text
+from ..structures.Avl import AVLTree
+from ..structures.Bst import BSTTree
+from ..structures.Node import Node
+from ..structures.Queue import Queue
+from ..structures.comparator import compare_keys
 
 
-SCHEMA_VERSION = 1
-
-# Allowed execution modes for the scenario.
+SCHEMA_VERSION = 2
 EXECUTION_MODES = {"NORMAL", "STRESS"}
-
-# Possible attention states for events.
 ATTENTION_STATES = {"PENDING", "REVIEWED"}
-
-# Possible lifecycle states for events.
 LIFECYCLE_STATES = {"ACTIVE", "ARCHIVED", "DELETED"}
 
-# Default monitoring stations.
-DEFAULT_STATIONS = ["STA-01", "STA-02", "STA-03"]
+
+class ScenarioLoadError(ValueError):
+    """A file that cannot be loaded. `problems` lists every problem found."""
+
+    def __init__(self, problems: List[str]):
+        self.problems = list(problems)
+        super().__init__("; ".join(self.problems))
 
 
 def _is_int(value: Any) -> bool:
-    """Check whether a value is a valid integer and not a boolean."""
     return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _require_dict(value: Any, label: str) -> Dict[str, Any]:
-    """Ensure that the given value is a dictionary."""
     if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a JSON object")
+        raise ValueError(f"{label} debe ser un objeto JSON")
     return value
 
 
-def _data_to_dict(data: EventData) -> Dict[str, int]:
-    """Convert event data into a JSON-compatible dictionary."""
+def _decimal(raw: Any, label: str) -> int:
+    """Read a decimal number from JSON and return it in tenths."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        raise ValueError(f"{label} debe ser un número")
+    try:
+        return to_tenths(raw)
+    except ValueError as error:
+        raise ValueError(f"{label}: {error}")
+
+
+# ---------------------------------------------------------------- events
+
+def _data_to_dict(data: EventData) -> Dict[str, Any]:
     return {
-        "event_id": data.event_id,
-        "magnitude10": data.magnitude10,
-        "depth10": data.depth10,
-        "x10": data.x10,
-        "y10": data.y10,
-        "time_epoch": data.time_epoch,
+        "id": data.event_id,
+        "magnitude": from_tenths(data.magnitude10),
+        "depth": from_tenths(data.depth10),
+        "x": from_tenths(data.x10),
+        "y": from_tenths(data.y10),
+        "time": format_utc(data.time_epoch),
     }
 
 
 def _dict_to_data(raw: Any, label: str) -> EventData:
-    """Convert a dictionary into an EventData object after validation."""
     raw = _require_dict(raw, label)
-
-    fields = (
-        "event_id",
-        "magnitude10",
-        "depth10",
-        "x10",
-        "y10",
-        "time_epoch",
-    )
-
-    values = [raw.get(field) for field in fields]
-
-    # All event data fields must be integers.
-    if any(not _is_int(value) for value in values):
-        raise ValueError(f"{label} fields must be integers")
-
-    return EventData(*values)
+    event_id = raw.get("id")
+    if not _is_int(event_id):
+        raise ValueError(f"{label}.id debe ser un entero")
+    try:
+        return EventData(
+            event_id,
+            _decimal(raw.get("magnitude"), f"{label}.magnitude"),
+            _decimal(raw.get("depth"), f"{label}.depth"),
+            _decimal(raw.get("x"), f"{label}.x"),
+            _decimal(raw.get("y"), f"{label}.y"),
+            parse_utc(raw.get("time")),
+        )
+    except ValueError as error:
+        message = str(error)
+        if message.startswith(label):
+            raise
+        raise ValueError(f"{label} (evento {event_id}): {message}")
 
 
 def _record_to_dict(record: EventRecord) -> Dict[str, Any]:
-    """Convert an event record into a JSON-compatible dictionary."""
-    return {
-        "data": _data_to_dict(record.data),
-        "revision": record.revision,
-        "priority": record.priority,
-        "stations": list(record.stations),
-        "attention": record.attention,
-        "state": record.state,
-    }
+    result = _data_to_dict(record.data)
+    result.update(
+        {
+            "revision": record.revision,
+            "priority": record.priority,
+            "stations": list(record.stations),
+            "attention": record.attention,
+            "state": record.state,
+        }
+    )
+    return result
 
 
 def _dict_to_record(
-    raw: Any, zones: ZoneMap, clock_epoch: int, label: str
+    raw: Any, zones: ZoneMap, clock_epoch: int, stations: List[str], label: str
 ) -> EventRecord:
-    """Validate event data and create an EventRecord object."""
-    raw = _require_dict(raw, label)
-
-    data = _dict_to_data(raw.get("data"), f"{label}.data")
-
-    # Events cannot occur after the scenario clock.
+    data = _dict_to_data(raw, label)
     if data.time_epoch > clock_epoch:
-        raise ValueError(f"{label} occurs after the scenario clock")
+        raise ValueError(f"{label} (evento {data.event_id}) ocurre después del reloj")
 
     revision = raw.get("revision")
-
     if not _is_int(revision) or revision < 1:
-        raise ValueError(f"{label}.revision must be a positive integer")
+        raise ValueError(f"{label}.revision debe ser un entero positivo")
 
-    stations = raw.get("stations")
-
-    # Stations must be unique and contain valid names.
+    record_stations = raw.get("stations")
     if (
-        not isinstance(stations, list)
-        or not stations
-        or any(
-            not isinstance(station, str) or not station
-            for station in stations
-        )
-        or len(stations) != len(set(stations))
+        not isinstance(record_stations, list)
+        or not record_stations
+        or any(not isinstance(station, str) or not station for station in record_stations)
+        or len(record_stations) != len(set(record_stations))
     ):
-        raise ValueError(
-            f"{label}.stations must be unique non-empty strings"
-        )
+        raise ValueError(f"{label}.stations debe ser una lista de textos sin repetir")
+    for station in record_stations:
+        if station not in stations:
+            raise ValueError(f"{label} usa la estación desconocida {station!r}")
 
     attention = raw.get("attention")
     state = raw.get("state")
-
-    # Validate event status values.
     if not isinstance(attention, str) or attention not in ATTENTION_STATES:
-        raise ValueError(f"{label}.attention is invalid")
-
+        raise ValueError(f"{label}.attention debe ser PENDING o REVIEWED")
     if not isinstance(state, str) or state not in LIFECYCLE_STATES:
-        raise ValueError(f"{label}.state is invalid")
+        raise ValueError(f"{label}.state debe ser ACTIVE, ARCHIVED o DELETED")
 
-    # Recalculate priority to verify the stored value.
     expected_priority = calculate_priority(data, zones)
-
     if raw.get("priority") != expected_priority:
-        raise ValueError(f"{label}.priority does not match its event data")
+        raise ValueError(
+            f"{label}: la prioridad guardada {raw.get('priority')!r} no coincide "
+            f"con la calculada ({expected_priority}) para el evento {data.event_id}"
+        )
 
-    record = EventRecord(
-        data,
-        revision,
-        expected_priority,
-        stations[0]
-    )
-
-    record.stations = list(stations)
+    record = EventRecord(data, revision, expected_priority, record_stations[0])
+    record.stations = list(record_stations)
     record.attention = attention
     record.state = state
-
     return record
 
 
+# ---------------------------------------------------------------- zones
+
 def _zone_to_dict(zone: Zone) -> Dict[str, Any]:
-    """Convert a geographic zone into a JSON-compatible dictionary."""
     return {
         "zone_id": zone.zone_id,
         "populated": zone.populated,
-        "x1": zone.x1,
-        "y1": zone.y1,
-        "x2": zone.x2,
-        "y2": zone.y2,
+        "x1": from_tenths(zone.x1),
+        "y1": from_tenths(zone.y1),
+        "x2": from_tenths(zone.x2),
+        "y2": from_tenths(zone.y2),
     }
 
 
 def _dict_to_zones(raw_zones: Any) -> ZoneMap:
-    """Validate zone data and create a ZoneMap."""
     if not isinstance(raw_zones, list):
-        raise ValueError("zones must be a list")
+        raise ValueError("zones debe ser una lista")
 
     zones = []
     seen_ids = set()
-
     for index, raw in enumerate(raw_zones):
         label = f"zones[{index}]"
         raw = _require_dict(raw, label)
-
         zone_id = raw.get("zone_id")
         populated = raw.get("populated")
-
-        bounds = [
-            raw.get(name)
-            for name in ("x1", "y1", "x2", "y2")
-        ]
-
-        # Zone IDs must be unique and non-empty.
-        if (
-            not isinstance(zone_id, str)
-            or not zone_id
-            or zone_id in seen_ids
-        ):
-            raise ValueError(
-                f"{label}.zone_id must be unique and non-empty"
-            )
-
+        if not isinstance(zone_id, str) or not zone_id or zone_id in seen_ids:
+            raise ValueError(f"{label}.zone_id debe ser un texto único")
         if not isinstance(populated, bool):
-            raise ValueError(f"{label}.populated must be a boolean")
-
-        # Coordinates must be integers inside the allowed range.
-        if any(
-            not _is_int(value) or not 0 <= value <= 10000
-            for value in bounds
-        ):
-            raise ValueError(
-                f"{label} bounds must be integers in [0, 10000]"
-            )
-
+            raise ValueError(f"{label}.populated debe ser true o false")
+        bounds = [_decimal(raw.get(name), f"{label}.{name}") for name in ("x1", "y1", "x2", "y2")]
+        if any(not 0 <= value <= 10000 for value in bounds):
+            raise ValueError(f"{label}: los límites deben estar entre 0.0 y 1000.0 km")
         x1, y1, x2, y2 = bounds
-
-        # Validate the zone rectangle.
         if x1 > x2 or y1 > y2:
-            raise ValueError(f"{label} has reversed bounds")
-
+            raise ValueError(f"{label}: los límites están invertidos")
         seen_ids.add(zone_id)
-        zones.append(
-            Zone(
-                zone_id,
-                populated,
-                x1,
-                y1,
-                x2,
-                y2
-            )
-        )
+        zones.append(Zone(zone_id, populated, x1, y1, x2, y2))
 
     return ZoneMap(zones)
 
 
+# ---------------------------------------------------------------- reports
+
 def _report_to_dict(report: Report) -> Dict[str, Any]:
-    """Convert a report into a JSON-compatible dictionary."""
-    return {
-        "data": _data_to_dict(report.data),
-        "revision": report.revision,
-        "station": report.station,
-    }
+    result = _data_to_dict(report.data)
+    result["revision"] = report.revision
+    result["station"] = report.station
+    return result
 
 
-def _dict_to_report(
-    raw: Any,
-    clock_epoch: int,
-    label: str
-) -> Report:
-    """Validate report data and create a Report object."""
-    raw = _require_dict(raw, label)
-
-    data = _dict_to_data(
-        raw.get("data"),
-        f"{label}.data"
-    )
-
-    # Reports cannot belong to the future.
-    if data.time_epoch > clock_epoch:
-        raise ValueError(
-            f"{label} occurs after the scenario clock"
-        )
-
+def _dict_to_report(raw: Any, stations: List[str], label: str) -> Report:
+    data = _dict_to_data(raw, label)
     revision = raw.get("revision")
     station = raw.get("station")
-
     if not _is_int(revision) or revision < 1:
-        raise ValueError(
-            f"{label}.revision must be a positive integer"
-        )
-
-    if not isinstance(station, str) or not station:
-        raise ValueError(
-            f"{label}.station must be a non-empty string"
-        )
-
+        raise ValueError(f"{label}.revision debe ser un entero positivo")
+    if not isinstance(station, str) or station not in stations:
+        raise ValueError(f"{label}: la estación {station!r} no existe en el escenario")
     return Report(data, revision, station)
 
 
-def _tree_to_dict(
-    tree: AVLTree,
-    registry: EventRegistry
-) -> Dict[str, Any]:
-    """Serialize the AVL tree while preserving its exact topology."""
+# ---------------------------------------------------------------- tree
 
+def _tree_to_dict(tree: AVLTree, registry: EventRegistry) -> Dict[str, Any]:
+    """Serialize AVL links by event identity, retaining the exact topology."""
     nodes = []
     seen_node_ids = set()
     seen_event_ids = set()
-
-    # Start traversal from the AVL root.
     stack = [tree.root] if tree.root is not None else []
 
     while stack:
         node = stack.pop()
-
         node_identity = id(node)
-
-        # Detect repeated references or cycles.
         if node_identity in seen_node_ids:
-            raise ValueError(
-                "AVL contains a cycle or a repeated node reference"
-            )
-
+            raise ValueError("El AVL contiene un ciclo o un nodo repetido")
         seen_node_ids.add(node_identity)
 
         record = node.getEvent()
         event_id = record.data.event_id
-
-        # Every event must appear only once.
         if event_id in seen_event_ids:
-            raise ValueError(
-                f"AVL contains duplicate event ID {event_id}"
-            )
-
-        # The node must correspond to the active registry record.
-        if (
-            registry.get(event_id) is not record
-            or record.state != ACTIVE
-        ):
-            raise ValueError(
-                f"AVL event {event_id} is not the active registry record"
-            )
-
-        # Verify that the node key matches the event key.
+            raise ValueError(f"El AVL contiene dos veces el evento {event_id}")
+        if registry.get(event_id) is not record or record.state != ACTIVE:
+            raise ValueError(f"El evento {event_id} del AVL no es el registro activo")
         if tuple(node.getKey()) != tuple(record.key()):
-            raise ValueError(
-                f"AVL key does not match event {event_id}"
-            )
+            raise ValueError(f"La clave del nodo no coincide con el evento {event_id}")
 
+        priority, magnitude10, _ = node.getKey()
         nodes.append(
             {
-                "event_id": event_id,
-                "key": list(node.getKey()),
+                "id": event_id,
+                "key": [priority, from_tenths(magnitude10), event_id],
                 "height": node.getHeight(),
                 "balance_factor": node.balance_factor(),
                 "left": (
@@ -334,263 +269,128 @@ def _tree_to_dict(
                 ),
             }
         )
-
         seen_event_ids.add(event_id)
-
         if node.getRight() is not None:
             stack.append(node.getRight())
-
         if node.getLeft() is not None:
             stack.append(node.getLeft())
 
-    # Compare tree events with active registry events.
     active_ids = {
         event_id
         for event_id, record in registry.records.items()
         if record.state == ACTIVE
     }
-
     if seen_event_ids != active_ids:
-        raise ValueError(
-            "AVL nodes and active registry records do not match"
-        )
+        raise ValueError("Los nodos del AVL no coinciden con los eventos activos")
 
     return {
         "root": (
-            tree.root.getEvent().data.event_id
-            if tree.root is not None
-            else None
+            tree.root.getEvent().data.event_id if tree.root is not None else None
         ),
         "nodes": nodes,
     }
 
 
-def _association_references(
-    associations: Any,
-    registry: EventRegistry,
-    parameters: Dict[str, Any]
-) -> Dict[int, int]:
-    """Validate and return event association references."""
-    if not isinstance(
-        associations,
-        AssociationService
-    ):
-        raise TypeError(
-            "Scenario associations must be an AssociationService"
-        )
-
+def _association_references(state: ScenarioState) -> Dict[int, int]:
+    associations = state.associations
+    registry = state.registry
+    if not isinstance(associations, AssociationService):
+        raise TypeError("Scenario associations must be an AssociationService")
     if associations.registry is not registry:
-        raise ValueError(
-            "AssociationService must use the scenario event registry"
-        )
-
-    # Validate association distance parameters.
-    if associations.w10 != parameters["W"] * 10:
-        raise ValueError(
-            "AssociationService W does not match scenario parameters"
-        )
-
-    if associations.r10 != parameters["R"] * 10:
-        raise ValueError(
-            "AssociationService R does not match scenario parameters"
-        )
+        raise ValueError("AssociationService must use the scenario event registry")
+    if associations.w10 != state.w10 or associations.r10 != state.r10:
+        raise ValueError("AssociationService W/R do not match scenario parameters")
 
     references = associations.references
-
-    if not isinstance(references, dict):
-        raise ValueError(
-            "AssociationService references must be a dictionary"
-        )
-
-    # Check that all association IDs are valid.
     for event_id, reference_id in references.items():
         if not _is_int(event_id) or not _is_int(reference_id):
-            raise ValueError(
-                "Association IDs must be integers"
-            )
+            raise ValueError("Association IDs must be integers")
+        if registry.get(event_id) is None or registry.get(reference_id) is None:
+            raise ValueError("Association references an unknown event")
 
-        if (
-            registry.get(event_id) is None
-            or registry.get(reference_id) is None
-        ):
-            raise ValueError(
-                "Association references an unknown event"
-            )
-
-    # Recalculate associations to detect stale data.
-    expected = AssociationService(
-        registry,
-        parameters["W"] * 10,
-        parameters["R"] * 10
-    )
-
+    expected = AssociationService(registry, state.w10, state.r10)
     for record in registry.records.values():
         expected.recompute(record)
-
     if references != expected.references:
-        raise ValueError(
-            "AssociationService references are stale or invalid"
-        )
-
+        raise ValueError("AssociationService references are stale or invalid")
     return dict(references)
 
 
-def scenario_to_dict(
-    state: ScenarioState
-) -> Dict[str, Any]:
-    """Convert a ScenarioState into JSON-compatible data."""
+def scenario_to_dict(state: ScenarioState) -> Dict[str, Any]:
+    """Convert a ScenarioState into JSON-compatible data (schema version 2).
 
+    The result shares nothing with the state, so it is also used as an
+    independent snapshot for the undo stack.
+    """
     if not isinstance(state, ScenarioState):
-        raise TypeError(
-            "state must be a ScenarioState"
-        )
-
+        raise TypeError("state must be a ScenarioState")
     state._validate_parameters()
-
-    if state.mode not in EXECUTION_MODES:
-        raise ValueError(
-            f"Invalid execution mode: {state.mode}"
-        )
-
-    # Validate the AVL structure before saving.
     structure_issues = state.tree.audit_structure()
-
     if structure_issues:
         raise ValueError(
-            "Cannot save an inconsistent AVL: "
-            + "; ".join(structure_issues)
+            "No se puede guardar un AVL inconsistente: " + "; ".join(structure_issues)
         )
+    associations = _association_references(state)
 
-    associations = _association_references(
-        state.associations,
-        state.registry,
-        state.parameters
-    )
-
-    records = list(
-        state.registry.records.items()
-    )
-
-    # Verify registry consistency.
+    records = list(state.registry.records.items())
     for event_id, record in records:
         if event_id != record.data.event_id:
-            raise ValueError(
-                "Registry key does not match its event ID"
-            )
+            raise ValueError("Registry key does not match its event ID")
 
-    if len(state.registry.records) != len(records):
-        raise ValueError(
-            "Registry contains duplicate event IDs"
-        )
-
-    pending_reports = state.pending_reports.to_list()
-
-    # Store scenario and AVL statistics.
-    metrics = {
-        "scenario": dict(state.metrics),
-        "avl": {
-            "count_ll": state.tree.count_ll,
-            "count_rr": state.tree.count_rr,
-            "count_lr": state.tree.count_lr,
-            "count_rl": state.tree.count_rl,
-            "count_left_rotations": (
-                state.tree.count_left_rotations
-            ),
-            "count_right_rotations": (
-                state.tree.count_right_rotations
-            ),
-        },
-    }
+    active_ids = [event_id for event_id, record in records if record.state == ACTIVE]
+    order = [event_id for event_id in state.insertion_order if event_id in active_ids]
+    for event_id in active_ids:          # defensive: every active id appears once
+        if event_id not in order:
+            order.append(event_id)
 
     document = {
         "schema_version": SCHEMA_VERSION,
         "mode": state.mode,
-        "clock_epoch": state.clock_epoch,
+        "clock": format_utc(state.clock_epoch),
         "parameters": dict(state.parameters),
         "stations": list(state.stations),
-        "metrics": metrics,
-        "associations": associations,
-        "zones": [
-            _zone_to_dict(zone)
-            for zone in state.zones.zones
-        ],
-        "events": [
-            _record_to_dict(record)
-            for _, record in records
-        ],
-        "tree": _tree_to_dict(
-            state.tree,
-            state.registry
-        ),
-        "insertion_order": [
-            event_id
-            for event_id, record in records
-            if record.state == ACTIVE
-        ],
+        "metrics": {
+            "scenario": dict(state.metrics),
+            "avl": state.rotation_counters(),
+        },
+        "zones": [_zone_to_dict(zone) for zone in state.zones.zones],
+        "events": [_record_to_dict(record) for _, record in records],
+        "tree": _tree_to_dict(state.tree, state.registry),
+        "insertion_order": order,
+        "associations": {str(key): value for key, value in sorted(associations.items())},
         "pending_reports": [
-            _report_to_dict(report)
-            for report in pending_reports
+            _report_to_dict(report) for report in state.pending_reports.to_list()
         ],
     }
-
-    # Make sure the document can be represented as JSON.
     try:
-        json.dumps(
-            document,
-            allow_nan=False
-        )
+        json.dumps(document, allow_nan=False)
     except (TypeError, ValueError) as error:
-        raise ValueError(
-            "Scenario contains values that cannot be represented in JSON"
-        ) from error
-
+        raise ValueError("Scenario contains values that cannot be represented in JSON") from error
     return document
 
 
-def save_scenario(
-    state: ScenarioState
-) -> Dict[str, Any]:
-    """Create a JSON-compatible representation of a scenario."""
+def save_scenario(state: ScenarioState) -> Dict[str, Any]:
+    """Build and return a JSON-compatible representation of a scenario."""
     return scenario_to_dict(state)
 
 
-def export_to_file(
-    filepath: str | os.PathLike[str],
-    scenario: Any
-) -> None:
-    """Save a scenario dictionary or ScenarioState to a JSON file."""
-
+def export_to_file(filepath: str | os.PathLike[str], scenario: Any) -> None:
+    """Write a ScenarioState or its serialized dictionary to a JSON file."""
     if isinstance(scenario, ScenarioState):
         document = scenario_to_dict(scenario)
-
     elif isinstance(scenario, dict):
         document = scenario
-
         try:
-            json.dumps(
-                document,
-                allow_nan=False
-            )
+            json.dumps(document, allow_nan=False)
         except (TypeError, ValueError) as error:
-            raise ValueError(
-                "scenario_dict must contain only JSON values"
-            ) from error
-
+            raise ValueError("scenario_dict must contain only JSON values") from error
     else:
-        raise TypeError(
-            "scenario must be a ScenarioState or a dictionary"
-        )
+        raise TypeError("scenario must be a ScenarioState or a dictionary")
 
     destination = Path(filepath)
-    destination.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
+    destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None
-
     try:
-        # Write to a temporary file before replacing the destination.
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -599,892 +399,558 @@ def export_to_file(
             suffix=".tmp",
             delete=False,
         ) as stream:
-
             temporary_path = Path(stream.name)
-
-            json.dump(
-                document,
-                stream,
-                ensure_ascii=False,
-                indent=2,
-                allow_nan=False
-            )
-
+            json.dump(document, stream, ensure_ascii=False, indent=2, allow_nan=False)
             stream.write("\n")
-
-        # Replace the old file safely.
-        os.replace(
-            temporary_path,
-            destination
-        )
-
+        os.replace(temporary_path, destination)
     finally:
-        if (
-            temporary_path is not None
-            and temporary_path.exists()
-        ):
+        if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
 
 
-def load_raw(
-    filepath: str | os.PathLike[str]
-) -> Dict[str, Any]:
-    """Read a JSON scenario file and return its raw data."""
+def load_raw(filepath: str | os.PathLike[str]) -> Dict[str, Any]:
+    """Read a JSON scenario file."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as stream:
+            document = json.load(stream)
+    except json.JSONDecodeError as error:
+        raise ScenarioLoadError([f"El archivo no es JSON válido: {error}"])
+    return _require_dict(document, "El archivo")
 
-    with open(
-        filepath,
-        "r",
-        encoding="utf-8"
-    ) as stream:
-        document = json.load(stream)
 
-    return _require_dict(
-        document,
-        "scenario"
-    )
+# ---------------------------------------------------------------- version 1
+
+def _upgrade_v1(document: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a schema version 1 document (epoch seconds, tenths) to version 2."""
+
+    def tenths_to_number(value):
+        if not _is_int(value):
+            raise ValueError("Los valores numéricos de la versión 1 deben ser enteros")
+        return from_tenths(value)
+
+    def data_v1(raw, label):
+        raw = _require_dict(raw, label)
+        time_epoch = raw.get("time_epoch")
+        if not _is_int(time_epoch) or time_epoch < 0:
+            raise ValueError(f"{label}.time_epoch debe ser un entero no negativo")
+        return {
+            "id": raw.get("event_id"),
+            "magnitude": tenths_to_number(raw.get("magnitude10")),
+            "depth": tenths_to_number(raw.get("depth10")),
+            "x": tenths_to_number(raw.get("x10")),
+            "y": tenths_to_number(raw.get("y10")),
+            "time": format_utc(time_epoch),
+        }
+
+    clock_epoch = document.get("clock_epoch")
+    if not _is_int(clock_epoch) or clock_epoch < 0:
+        raise ValueError("clock_epoch debe ser un entero no negativo")
+
+    upgraded = dict(document)
+    upgraded["schema_version"] = SCHEMA_VERSION
+    upgraded["clock"] = format_utc(clock_epoch)
+    upgraded.pop("clock_epoch", None)
+
+    events = []
+    for index, raw in enumerate(_list(document.get("events"), "events")):
+        raw = _require_dict(raw, f"events[{index}]")
+        event = data_v1(raw.get("data"), f"events[{index}].data")
+        for name in ("revision", "priority", "stations", "attention", "state"):
+            event[name] = raw.get(name)
+        events.append(event)
+    upgraded["events"] = events
+
+    reports = []
+    for index, raw in enumerate(_list(document.get("pending_reports", []), "pending_reports")):
+        raw = _require_dict(raw, f"pending_reports[{index}]")
+        report = data_v1(raw.get("data"), f"pending_reports[{index}].data")
+        report["revision"] = raw.get("revision")
+        report["station"] = raw.get("station")
+        reports.append(report)
+    upgraded["pending_reports"] = reports
+
+    zones = []
+    for index, raw in enumerate(_list(document.get("zones", []), "zones")):
+        raw = dict(_require_dict(raw, f"zones[{index}]"))
+        for name in ("x1", "y1", "x2", "y2"):
+            raw[name] = tenths_to_number(raw.get(name))
+        zones.append(raw)
+    upgraded["zones"] = zones
+
+    tree = _require_dict(document.get("tree", {}), "tree")
+    nodes = []
+    for index, raw in enumerate(_list(tree.get("nodes", []), "tree.nodes")):
+        raw = dict(_require_dict(raw, f"tree.nodes[{index}]"))
+        raw["id"] = raw.pop("event_id", None)
+        key = raw.get("key")
+        if isinstance(key, list) and len(key) == 3:
+            raw["key"] = [key[0], tenths_to_number(key[1]), key[2]]
+        nodes.append(raw)
+    upgraded["tree"] = {"root": tree.get("root"), "nodes": nodes}
+    return upgraded
+
+
+def _list(value: Any, label: str) -> List[Any]:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} debe ser una lista")
+    return value
+
+
+def _normalize(document: Any) -> Dict[str, Any]:
+    document = _require_dict(document, "El archivo")
+    version = document.get("schema_version")
+    if version == 1:
+        return _upgrade_v1(document)
+    if version != SCHEMA_VERSION:
+        raise ValueError(f"Versión de esquema no soportada: {version!r}")
+    return document
+
+
+# ---------------------------------------------------------------- full loaders
+
+def _load_parameters(document: Dict[str, Any]) -> Dict[str, Any]:
+    parameters = _require_dict(document.get("parameters"), "parameters")
+    required = {"W", "R", "L"}
+    if not required.issubset(parameters):
+        raise ValueError("parameters debe incluir W, R y L")
+    parameters = dict(parameters)
+    parameters.setdefault("T", 72)      # old files do not have T
+    return parameters
+
+
+def _load_stations(document: Dict[str, Any]) -> List[str]:
+    raw = document.get("stations")
+    if raw is None:
+        # Old files: default catalog plus every station already used in the file
+        stations = list(DEFAULT_STATIONS)
+        used = []
+        for event in document.get("events", []):
+            if isinstance(event, dict) and isinstance(event.get("stations"), list):
+                used += event["stations"]
+        for report in document.get("pending_reports", []):
+            if isinstance(report, dict):
+                used.append(report.get("station"))
+        for station in used:
+            if isinstance(station, str) and station and station not in stations:
+                stations.append(station)
+        return stations
+    if not isinstance(raw, list):
+        raise ValueError("stations debe ser una lista")
+    return list(raw)
+
+
+def _load_metrics(document: Dict[str, Any]) -> Tuple[Dict[str, int], Dict[str, int]]:
+    raw = _require_dict(document.get("metrics", {}), "metrics")
+    scenario_metrics = _require_dict(raw.get("scenario", {}), "metrics.scenario")
+    avl_metrics = _require_dict(raw.get("avl", {}), "metrics.avl")
+    for name, value in scenario_metrics.items():
+        if not _is_int(value) or value < 0:
+            raise ValueError(f"metrics.scenario.{name} debe ser un entero no negativo")
+
+    counters = {}
+    for name in ROTATION_NAMES:
+        value = avl_metrics.get(name, 0)
+        if not _is_int(value) or value < 0:
+            raise ValueError(f"metrics.avl.{name} debe ser un entero no negativo")
+        counters[name] = value
+    return dict(scenario_metrics), counters
 
 
 def _load_records(
-    document: Dict[str, Any],
-    zones: ZoneMap
-) -> EventRegistry:
-    """Load and validate event records into the registry."""
-
-    clock_epoch = document.get("clock_epoch")
-
-    if not _is_int(clock_epoch) or clock_epoch < 0:
-        raise ValueError(
-            "clock_epoch must be a non-negative integer"
-        )
-
-    raw_events = document.get("events")
-
-    if not isinstance(raw_events, list):
-        raise ValueError(
-            "events must be a list"
-        )
-
+    document: Dict[str, Any], zones: ZoneMap, clock_epoch: int, stations: List[str]
+) -> Tuple[EventRegistry, List[str]]:
+    """Read every event. Returns the registry and the list of problems found."""
     registry = EventRegistry()
-
-    for index, raw in enumerate(raw_events):
-        record = _dict_to_record(
-            raw,
-            zones,
-            clock_epoch,
-            f"events[{index}]"
-        )
-
+    problems = []
+    for index, raw in enumerate(_list(document.get("events"), "events")):
+        try:
+            record = _dict_to_record(raw, zones, clock_epoch, stations, f"events[{index}]")
+        except ValueError as error:
+            problems.append(str(error))
+            continue
         event_id = record.data.event_id
-
         if registry.get(event_id) is not None:
-            raise ValueError(
-                f"Duplicate event ID {event_id}"
-            )
-
+            problems.append(f"El identificador {event_id} está repetido")
+            continue
         registry.add(record)
-
-    return registry
-
-
-def _load_parameters(
-    document: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Load and validate the scenario parameters."""
-
-    parameters = _require_dict(
-        document.get("parameters"),
-        "parameters"
-    )
-
-    required = {"W", "R", "L"}
-
-    if not required.issubset(parameters):
-        raise ValueError(
-            "parameters must include W, R, and L"
-        )
-
-    result = dict(parameters)
-
-    # Use 72 as the default T parameter.
-    result.setdefault("T", 72)
-
-    return result
-
-
-def _load_metrics(
-    document: Dict[str, Any]
-) -> Tuple[
-    Dict[str, int],
-    Dict[str, int]
-]:
-    """Load and validate scenario and AVL metrics."""
-
-    raw = _require_dict(
-        document.get("metrics"),
-        "metrics"
-    )
-
-    scenario_metrics = raw.get(
-        "scenario",
-        {}
-    )
-
-    avl_metrics = raw.get(
-        "avl",
-        {}
-    )
-
-    scenario_metrics = _require_dict(
-        scenario_metrics,
-        "metrics.scenario"
-    )
-
-    avl_metrics = _require_dict(
-        avl_metrics,
-        "metrics.avl"
-    )
-
-    # Scenario metrics must be non-negative integers.
-    if any(
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or value < 0
-        for value in scenario_metrics.values()
-    ):
-        raise ValueError(
-            "Scenario metric values must be non-negative integers"
-        )
-
-    names = (
-        "count_ll",
-        "count_rr",
-        "count_lr",
-        "count_rl",
-        "count_left_rotations",
-        "count_right_rotations",
-    )
-
-    counters = {}
-
-    for name in names:
-        value = avl_metrics.get(
-            name,
-            0
-        )
-
-        if not _is_int(value) or value < 0:
-            raise ValueError(
-                f"metrics.avl.{name} must be a non-negative integer"
-            )
-
-        counters[name] = value
-
-        if (
-            name in scenario_metrics
-            and scenario_metrics[name] != value
-        ):
-            raise ValueError(
-                f"metrics.{name} counters do not match "
-                f"the AVL counters"
-            )
-
-        scenario_metrics[name] = value
-
-    return (
-        dict(scenario_metrics),
-        counters
-    )
+    return registry, problems
 
 
 def _load_associations(
-    document: Dict[str, Any],
-    registry: EventRegistry,
-    parameters: Dict[str, Any]
+    document: Dict[str, Any], registry: EventRegistry, w10: int, r10: int
 ) -> AssociationService:
-    """Load and validate event associations."""
-
-    raw = _require_dict(
-        document.get("associations", {}),
-        "associations"
-    )
-
+    raw = _require_dict(document.get("associations", {}), "associations")
     references = {}
-
     for key, value in raw.items():
-
         try:
             event_id = int(key)
-
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"Invalid association event ID: {key!r}"
-            ) from error
-
-        if event_id in references:
-            raise ValueError(
-                f"Duplicate association event ID: {event_id}"
-            )
-
+        except (TypeError, ValueError):
+            raise ValueError(f"Identificador de asociación inválido: {key!r}")
         if not _is_int(value):
-            raise ValueError(
-                f"Invalid reference event ID for {event_id}"
-            )
-
+            raise ValueError(f"Referencia inválida para el evento {event_id}")
         references[event_id] = value
 
-    associations = AssociationService(
-        registry,
-        parameters["W"] * 10,
-        parameters["R"] * 10
-    )
-
-    # Recalculate the expected associations.
+    associations = AssociationService(registry, w10, r10)
     for record in registry.records.values():
         associations.recompute(record)
-
     if references != associations.references:
         raise ValueError(
-            "Saved associations do not match the event data"
+            "Las asociaciones guardadas no coinciden con las calculadas con W y R"
         )
-
     return associations
 
 
-def _load_pending_reports(
-    document: Dict[str, Any],
-    clock_epoch: int,
-    stations=None
-) -> Queue:
-    """Load pending reports into a FIFO queue."""
-
-    raw_reports = document.get(
-        "pending_reports"
-    )
-
-    if not isinstance(raw_reports, list):
-        raise ValueError(
-            "pending_reports must be a list"
-        )
-
+def _load_pending_reports(document: Dict[str, Any], stations: List[str]) -> Queue:
     queue = Queue()
-
-    for index, raw in enumerate(raw_reports):
-        report = _dict_to_report(
-            raw,
-            clock_epoch,
-            f"pending_reports[{index}]"
-        )
-
-        if (
-            stations is not None
-            and report.station not in stations
-        ):
-            raise ValueError(
-                f"pending_reports[{index}].station is unknown"
-            )
-
-        # Add the report to the FIFO queue.
-        queue.enqueue(report)
-
+    for index, raw in enumerate(_list(document.get("pending_reports", []), "pending_reports")):
+        queue.enqueue(_dict_to_report(raw, stations, f"pending_reports[{index}]"))
     return queue
 
 
-def _new_state(
-    document: Dict[str, Any]
-) -> ScenarioState:
-    """Create a ScenarioState from validated scenario data."""
-
-    # Validate the file schema version.
-    if document.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(
-            "Unsupported schema version: "
-            f"{document.get('schema_version')!r}"
-        )
-
+def _new_state(document: Dict[str, Any]) -> ScenarioState:
     mode = document.get("mode")
+    if not isinstance(mode, str) or mode not in EXECUTION_MODES:
+        raise ValueError(f"Modo de ejecución inválido: {mode!r}")
 
-    if (
-        not isinstance(mode, str)
-        or mode not in EXECUTION_MODES
-    ):
-        raise ValueError(
-            f"Invalid execution mode: {mode!r}"
-        )
+    clock_epoch = parse_utc(document.get("clock"))
+    zones = _dict_to_zones(document.get("zones"))
+    stations = _load_stations(document)
+    parameters = _load_parameters(document)
+    scenario_metrics, avl_metrics = _load_metrics(document)
 
-    clock_epoch = document.get(
-        "clock_epoch"
-    )
+    # A temporary state validates parameters and stations before the events
+    check = ScenarioState(parameters=dict(parameters), stations=list(stations))
+    registry, problems = _load_records(document, zones, clock_epoch, stations)
+    if problems:
+        raise ScenarioLoadError(problems)
+    queue = _load_pending_reports(document, stations)
 
-    if not _is_int(clock_epoch) or clock_epoch < 0:
-        raise ValueError(
-            "clock_epoch must be a non-negative integer"
-        )
-
-    zones = _dict_to_zones(
-        document.get("zones")
-    )
-
-    registry = _load_records(
-        document,
-        zones
-    )
-
-    parameters = _load_parameters(
-        document
-    )
-
-    stations = document.get(
-        "stations",
-        DEFAULT_STATIONS
-    )
-
-    if (
-        not isinstance(stations, list)
-        or not stations
-        or any(
-            not isinstance(name, str)
-            or not name
-            for name in stations
-        )
-        or len(stations) != len(set(stations))
-    ):
-        raise ValueError(
-            "stations must be unique non-empty names"
-        )
-
-    scenario_metrics, avl_metrics = _load_metrics(
-        document
-    )
-
-    queue = _load_pending_reports(
-        document,
-        clock_epoch,
-        stations
-    )
-
-    # Create the complete scenario state.
     state = ScenarioState(
+        stations=stations,
         registry=registry,
         zones=zones,
         pending_reports=queue,
         clock_epoch=clock_epoch,
         parameters=parameters,
         metrics=scenario_metrics,
-        stations=list(stations),
-        associations=_load_associations(
-            document,
-            registry,
-            parameters
-        ),
+        associations=_load_associations(document, registry, check.w10, check.r10),
     )
-
     state.mode = mode
-
-    # Restore AVL counters.
     for name, value in avl_metrics.items():
-        setattr(
-            state.tree,
-            name,
-            value
-        )
-
+        setattr(state.tree, name, value)
     return state
 
 
 def _tree_from_topology(
-    raw_tree: Any,
-    registry: EventRegistry,
-    stress_mode: bool
+    raw_tree: Any, registry: EventRegistry, stress_mode: bool
 ) -> AVLTree:
-    """Rebuild an AVL tree using the stored tree topology."""
-
-    raw_tree = _require_dict(
-        raw_tree,
-        "tree"
-    )
-
-    raw_nodes = raw_tree.get(
-        "nodes"
-    )
-
-    if not isinstance(raw_nodes, list):
-        raise ValueError(
-            "tree.nodes must be a list"
-        )
+    """Rebuild the AVL exactly as it was saved. Raises ScenarioLoadError."""
+    raw_tree = _require_dict(raw_tree, "tree")
+    raw_nodes = _list(raw_tree.get("nodes"), "tree.nodes")
+    problems = []
 
     descriptors = {}
-
-    # Read and validate every stored node.
     for index, raw in enumerate(raw_nodes):
-
         label = f"tree.nodes[{index}]"
-
-        raw = _require_dict(
-            raw,
-            label
-        )
-
-        event_id = raw.get(
-            "event_id"
-        )
-
-        if (
-            not _is_int(event_id)
-            or event_id in descriptors
-        ):
-            raise ValueError(
-                f"{label}.event_id is invalid or duplicated"
-            )
-
-        record = registry.get(
-            event_id
-        )
-
-        if (
-            record is None
-            or record.state != ACTIVE
-        ):
-            raise ValueError(
-                f"{label} does not reference an active event"
-            )
+        raw = _require_dict(raw, label)
+        event_id = raw.get("id")
+        if not _is_int(event_id) or event_id in descriptors:
+            problems.append(f"{label}: identificador inválido o repetido ({event_id!r})")
+            continue
+        record = registry.get(event_id)
+        if record is None or record.state != ACTIVE:
+            problems.append(f"El nodo {event_id} no corresponde a un evento activo")
+            continue
 
         key = raw.get("key")
-
-        if (
-            not isinstance(key, list)
-            or len(key) != 3
-            or any(
-                not _is_int(value)
-                for value in key
+        try:
+            key_ok = (
+                isinstance(key, list)
+                and len(key) == 3
+                and _is_int(key[0])
+                and _is_int(key[2])
+                and (key[0], _decimal(key[1], "key"), key[2]) == record.key()
             )
-            or tuple(key) != record.key()
-        ):
-            raise ValueError(
-                f"{label}.key does not match the registered event"
+        except ValueError:
+            key_ok = False
+        if not key_ok:
+            problems.append(
+                f"La clave guardada del nodo {event_id} no coincide con sus datos "
+                f"(esperada {key_text(record.key())})"
             )
-
-        height = raw.get(
-            "height"
-        )
-
-        balance = raw.get(
-            "balance_factor"
-        )
-
-        if (
-            not _is_int(height)
-            or height < 0
-            or not _is_int(balance)
-        ):
-            raise ValueError(
-                f"{label} has invalid height or balance metadata"
-            )
-
+        height = raw.get("height")
+        balance = raw.get("balance_factor")
+        if not _is_int(height) or height < 0 or not _is_int(balance):
+            problems.append(f"El nodo {event_id} tiene altura o factor de balance inválidos")
+            continue
         descriptors[event_id] = raw
 
-    # The tree must contain all active events.
     active_ids = {
         event_id
         for event_id, record in registry.records.items()
         if record.state == ACTIVE
     }
+    for missing in sorted(active_ids - set(descriptors)):
+        if not any(str(missing) in problem for problem in problems):
+            problems.append(f"El evento activo {missing} no aparece en el árbol")
+    if problems:
+        raise ScenarioLoadError(problems)
 
-    if set(descriptors) != active_ids:
-        raise ValueError(
-            "Tree must contain every active event exactly once"
-        )
-
-    root_id = raw_tree.get(
-        "root"
-    )
-
+    root_id = raw_tree.get("root")
     if not descriptors:
         if root_id is not None:
-            raise ValueError(
-                "An empty tree must have a null root"
-            )
-
-        return AVLTree(
-            stress_mode=stress_mode
-        )
-
-    if (
-        not _is_int(root_id)
-        or root_id not in descriptors
-    ):
-        raise ValueError(
-            "tree.root must identify an existing node"
-        )
+            raise ScenarioLoadError(["Un árbol vacío debe tener raíz null"])
+        return AVLTree(stress_mode=stress_mode)
+    if not _is_int(root_id) or root_id not in descriptors:
+        raise ScenarioLoadError([f"La raíz {root_id!r} no es un nodo del árbol"])
 
     parent_by_id = {}
-
-    # Validate parent-child relationships.
     for event_id, raw in descriptors.items():
-
         for side in ("left", "right"):
-
             child_id = raw.get(side)
-
             if child_id is None:
                 continue
-
-            if (
-                not _is_int(child_id)
-                or child_id not in descriptors
-            ):
-                raise ValueError(
-                    f"Tree node {event_id} has an invalid "
-                    f"{side} reference"
-                )
-
-            if child_id in parent_by_id:
-                raise ValueError(
-                    f"Tree node {child_id} has multiple parents"
-                )
-
-            parent_by_id[child_id] = event_id
-
+            if not _is_int(child_id) or child_id not in descriptors:
+                problems.append(f"El nodo {event_id} tiene un enlace {side} inválido ({child_id!r})")
+            elif child_id in parent_by_id:
+                problems.append(f"El nodo {child_id} aparece en más de una posición")
+            else:
+                parent_by_id[child_id] = event_id
     if root_id in parent_by_id:
-        raise ValueError(
-            "Tree root cannot have a parent"
-        )
+        problems.append("La raíz no puede tener padre (hay un ciclo)")
+    if problems:
+        raise ScenarioLoadError(problems)
 
-    if set(parent_by_id) != (
-        set(descriptors) - {root_id}
-    ):
-        raise ValueError(
-            "Every non-root node must have exactly one parent"
-        )
-
-    # Create the AVL nodes.
     nodes = {
-        event_id: Node(
-            registry.get(event_id).key(),
-            registry.get(event_id)
-        )
+        event_id: Node(registry.get(event_id).key(), registry.get(event_id))
         for event_id in descriptors
     }
-
-    # Connect the nodes using the saved topology.
     for event_id, raw in descriptors.items():
+        if raw.get("left") is not None:
+            nodes[event_id].setLeft(nodes[raw["left"]])
+        if raw.get("right") is not None:
+            nodes[event_id].setRight(nodes[raw["right"]])
 
-        node = nodes[event_id]
-
-        left_id = raw.get("left")
-        right_id = raw.get("right")
-
-        if left_id is not None:
-            node.setLeft(
-                nodes[left_id]
-            )
-
-        if right_id is not None:
-            node.setRight(
-                nodes[right_id]
-            )
-
-    root = nodes[root_id]
-
+    # Walk from the root checking global order, heights and balance factors
     visited: Set[int] = set()
     calculated_heights = {}
-
-    # Stack is used to validate the tree iteratively.
-    stack = [
-        (root_id, False, None, None)
-    ]
-
+    stack = [(root_id, False, None, None)]
     while stack:
-
         event_id, exiting, lower, upper = stack.pop()
-
         node = nodes[event_id]
         key = node.getKey()
-
         if not exiting:
-
-            # Detect cycles or repeated nodes.
             if event_id in visited:
-                raise ValueError(
-                    "Tree topology contains a cycle or repeated node"
-                )
-
+                raise ScenarioLoadError(["La topología contiene un ciclo"])
             visited.add(event_id)
-
-            # Validate BST ordering.
-            if (
-                lower is not None
-                and key <= lower
-            ):
-                raise ValueError(
-                    f"BST ordering violation at event {event_id}"
-                )
-
-            if (
-                upper is not None
-                and key >= upper
-            ):
-                raise ValueError(
-                    f"BST ordering violation at event {event_id}"
-                )
-
-            stack.append(
-                (
-                    event_id,
-                    True,
-                    lower,
-                    upper
-                )
-            )
-
-            right_id = descriptors[event_id].get(
-                "right"
-            )
-
-            left_id = descriptors[event_id].get(
-                "left"
-            )
-
+            if lower is not None and compare_keys(key, lower) <= 0:
+                problems.append(f"Orden incorrecto: el nodo {event_id} {key_text(key)} debe ser mayor que {key_text(lower)}")
+            if upper is not None and compare_keys(key, upper) >= 0:
+                problems.append(f"Orden incorrecto: el nodo {event_id} {key_text(key)} debe ser menor que {key_text(upper)}")
+            stack.append((event_id, True, lower, upper))
+            right_id = descriptors[event_id].get("right")
+            left_id = descriptors[event_id].get("left")
             if right_id is not None:
-                stack.append(
-                    (
-                        right_id,
-                        False,
-                        key,
-                        upper
-                    )
-                )
-
+                stack.append((right_id, False, key, upper))
             if left_id is not None:
-                stack.append(
-                    (
-                        left_id,
-                        False,
-                        lower,
-                        key
-                    )
-                )
-
+                stack.append((left_id, False, lower, key))
             continue
 
-        left_id = descriptors[event_id].get(
-            "left"
-        )
-
-        right_id = descriptors[event_id].get(
-            "right"
-        )
-
-        left_height = calculated_heights.get(
-            left_id,
-            -1
-        )
-
-        right_height = calculated_heights.get(
-            right_id,
-            -1
-        )
-
-        calculated_height = (
-            1 + max(
-                left_height,
-                right_height
-            )
-        )
-
-        calculated_balance = (
-            left_height - right_height
-        )
-
+        left_height = calculated_heights.get(descriptors[event_id].get("left"), -1)
+        right_height = calculated_heights.get(descriptors[event_id].get("right"), -1)
+        calculated_height = 1 + max(left_height, right_height)
+        calculated_balance = left_height - right_height
         raw = descriptors[event_id]
-
-        # Verify stored AVL metadata.
         if raw["height"] != calculated_height:
-            raise ValueError(
-                f"Stored height is incorrect at event {event_id}"
+            problems.append(
+                f"Altura guardada incorrecta en {event_id}: {raw['height']} (calculada {calculated_height})"
             )
-
         if raw["balance_factor"] != calculated_balance:
-            raise ValueError(
-                f"Stored balance factor is incorrect at event {event_id}"
+            problems.append(
+                f"Factor de balance incorrecto en {event_id}: {raw['balance_factor']} "
+                f"(calculado {calculated_balance})"
             )
-
-        # Normal mode requires a balanced AVL tree.
-        if (
-            not stress_mode
-            and abs(calculated_balance) > 1
-        ):
-            raise ValueError(
-                f"Unbalanced topology at event {event_id} "
-                "requires STRESS mode"
+        if not stress_mode and abs(calculated_balance) > 1:
+            problems.append(
+                f"El nodo {event_id} está desbalanceado ({calculated_balance}): "
+                "esta topología solo se puede cargar en modo estrés"
             )
-
-        node.setHeight(
-            calculated_height
-        )
-
-        calculated_heights[event_id] = (
-            calculated_height
-        )
+        node.setHeight(calculated_height)
+        calculated_heights[event_id] = calculated_height
 
     if visited != set(descriptors):
-        raise ValueError(
-            "Tree contains nodes unreachable from its root"
-        )
+        unreachable = sorted(set(descriptors) - visited)
+        problems.append(f"Nodos no alcanzables desde la raíz: {unreachable}")
+    if problems:
+        raise ScenarioLoadError(problems)
 
-    tree = AVLTree(
-        stress_mode=stress_mode
-    )
-
-    tree.root = root
+    tree = AVLTree(stress_mode=stress_mode)
+    tree.root = nodes[root_id]
     tree._size = len(nodes)
-
     return tree
 
 
-def load_by_topology(
-    filepath: str | os.PathLike[str]
-) -> ScenarioState:
-    """Load a scenario while preserving its exact AVL topology."""
-    return scenario_from_dict(
-        load_raw(filepath)
-    )
+def _load_insertion_order(document: Dict[str, Any], state: ScenarioState) -> List[int]:
+    active_ids = [
+        event_id for event_id, record in state.registry.records.items() if record.state == ACTIVE
+    ]
+    raw = document.get("insertion_order")
+    if raw is None:
+        return [node.getEvent().data.event_id for node in state.tree.level_order()]
+    if (
+        not isinstance(raw, list)
+        or any(not _is_int(value) for value in raw)
+        or len(raw) != len(set(raw))
+        or set(raw) != set(active_ids)
+    ):
+        raise ValueError("insertion_order debe listar cada evento activo exactamente una vez")
+    return list(raw)
 
 
-def scenario_from_dict(
-    document: Dict[str, Any]
-) -> ScenarioState:
-    """Validate and restore a complete scenario from JSON data."""
+def _as_load_error(error: Exception) -> ScenarioLoadError:
+    if isinstance(error, ScenarioLoadError):
+        return error
+    return ScenarioLoadError([str(error)])
 
-    document = _require_dict(
-        document,
-        "scenario"
-    )
 
-    state = _new_state(
-        document
-    )
-
-    # Restore the exact AVL structure from the saved topology.
-    state.tree = _tree_from_topology(
-        document.get("tree"),
-        state.registry,
-        state.mode == "STRESS"
-    )
-
-    state.tree.bind_metrics(
-        state.metrics
-    )
-
-    scenario_metrics, avl_metrics = _load_metrics(
-        document
-    )
-
-    state.metrics.update(
-        scenario_metrics
-    )
-
-    for name, value in avl_metrics.items():
-        setattr(
-            state.tree,
-            name,
-            value
+def load_by_topology_from_dict(document: Any) -> ScenarioState:
+    """Load a complete scenario (already parsed JSON) keeping its exact AVL topology."""
+    try:
+        document = _normalize(document)
+        state = _new_state(document)
+        counters = state.rotation_counters()
+        state.tree = _tree_from_topology(
+            document.get("tree"), state.registry, state.mode == "STRESS"
         )
+        for name, value in counters.items():
+            setattr(state.tree, name, value)
+        state.insertion_order = _load_insertion_order(document, state)
+        return state
+    except (ValueError, TypeError) as error:
+        raise _as_load_error(error)
 
-    return state
+
+def load_by_topology(filepath: str | os.PathLike[str]) -> ScenarioState:
+    """Load a complete scenario while preserving its exact AVL topology."""
+    return load_by_topology_from_dict(load_raw(filepath))
+
+
+# ---------------------------------------------------------------- insertion loaders
+
+def _is_simple_document(document: Dict[str, Any]) -> bool:
+    return "tree" not in document and "schema_version" not in document
+
+
+def _simple_events_state(document: Dict[str, Any]) -> Tuple[ScenarioState, List[int]]:
+    """Validate a simple {"events": [...]} file. Returns a state with an empty
+    tree plus the event ids in file order."""
+    problems = []
+    zones = default_zones()
+    if "zones" in document:
+        zones = _dict_to_zones(document.get("zones"))
+    stations = _load_stations(document) if "stations" in document else list(DEFAULT_STATIONS)
+    parameters = dict(_require_dict(document.get("parameters", {}), "parameters"))
+    for name, value in {"W": 48, "R": 40, "L": 3, "T": 72}.items():
+        parameters.setdefault(name, value)
+    check = ScenarioState(parameters=dict(parameters), stations=list(stations))
+
+    raw_events = _list(document.get("events"), "events")
+    if not raw_events:
+        problems.append("El archivo no contiene eventos")
+
+    registry = EventRegistry()
+    order = []
+    for index, raw in enumerate(raw_events):
+        label = f"events[{index}]"
+        try:
+            data = _dict_to_data(raw, label)
+            revision = raw.get("revision", 1)
+            station = raw.get("station", stations[0])
+            if not _is_int(revision) or revision < 1:
+                raise ValueError(f"{label}.revision debe ser un entero positivo")
+            if station not in stations:
+                raise ValueError(f"{label}: la estación {station!r} no existe")
+        except ValueError as error:
+            problems.append(str(error))
+            continue
+        if registry.get(data.event_id) is not None:
+            problems.append(
+                f"El identificador {data.event_id} está repetido (events[{index}]); "
+                "las revisiones de un mismo evento se procesan con la cola"
+            )
+            continue
+        record = EventRecord(data, revision, calculate_priority(data, zones), station)
+        registry.add(record)
+        order.append(data.event_id)
+
+    latest = max((r.data.time_epoch for r in registry.records.values()), default=0)
+    clock_epoch = latest
+    if "clock" in document:
+        try:
+            clock_epoch = parse_utc(document.get("clock"))
+        except ValueError as error:
+            problems.append(str(error))
+        if clock_epoch < latest:
+            problems.append("Hay eventos posteriores al reloj del archivo")
+    if problems:
+        raise ScenarioLoadError(problems)
+
+    state = ScenarioState(
+        stations=stations,
+        registry=registry,
+        zones=zones,
+        clock_epoch=clock_epoch,
+        parameters=parameters,
+        associations=AssociationService(registry, check.w10, check.r10),
+    )
+    for record in registry.records.values():
+        state.associations.recompute(record)
+    return state, order
+
+
+def load_by_insertions_from_dict(document: Any) -> Tuple[ScenarioState, BSTTree]:
+    """Build a new AVL (balancing on) and a comparison BST with the SAME comparator
+    and the SAME insertion order.
+
+    Two formats are accepted:
+    - simple file {"events": [...]} (optional zones, stations, parameters, clock);
+    - complete scenario file: its active events are reinserted in insertion_order.
+    """
+    try:
+        document = _require_dict(document, "El archivo")
+        if _is_simple_document(document):
+            state, order = _simple_events_state(document)
+        else:
+            document = _normalize(document)
+            state = _new_state(document)
+            state.tree = AVLTree()
+            order = _load_insertion_order(document, state)
+    except (ValueError, TypeError) as error:
+        raise _as_load_error(error)
+
+    # Insertion loading always uses the normal (balanced) mode
+    state.tree = AVLTree(stress_mode=False)
+    state.insertion_order = []
+    bst = BSTTree()
+    for event_id in order:
+        record = state.registry.get(event_id)
+        state.add_to_tree(record)
+        bst.insert(record.key(), record)
+    return state, bst
 
 
 def load_by_insertions(
     filepath: str | os.PathLike[str],
 ) -> Tuple[ScenarioState, BSTTree]:
-    """Load a scenario and rebuild AVL and BST using insertion order."""
-
-    return load_by_insertions_from_dict(
-        load_raw(filepath)
-    )
+    """Build a new AVL and comparison BST from the stored insertion sequence."""
+    return load_by_insertions_from_dict(load_raw(filepath))
 
 
-def load_by_insertions_from_dict(
-    document: Dict[str, Any],
-) -> Tuple[ScenarioState, BSTTree]:
-    """Rebuild AVL and BST trees from the stored insertion sequence."""
-
-    document = _require_dict(
-        document,
-        "scenario"
-    )
-
-    state = _new_state(
-        document
-    )
-
-    raw_order = document.get(
-        "insertion_order"
-    )
-
-    if (
-        not isinstance(raw_order, list)
-        or any(
-            not _is_int(value)
-            for value in raw_order
-        )
-    ):
-        raise ValueError(
-            "insertion_order must be a list of event IDs"
-        )
-
-    # Get all active event IDs.
-    active_ids = {
-        event_id
-        for event_id, record in state.registry.records.items()
-        if record.state == ACTIVE
-    }
-
-    if (
-        len(raw_order) != len(set(raw_order))
-        or set(raw_order) != active_ids
-    ):
-        raise ValueError(
-            "insertion_order must list every active event exactly once"
-        )
-
-    # Reset AVL rotation counters before rebuilding.
-    for name in (
-        "count_ll",
-        "count_rr",
-        "count_lr",
-        "count_rl",
-        "count_left_rotations",
-        "count_right_rotations"
-    ):
-        state.metrics[name] = 0
-
-    tree = AVLTree(
-        stress_mode=False
-    )
-
-    tree.bind_metrics(
-        state.metrics
-    )
-
+def build_bst(state: ScenarioState) -> BSTTree:
+    """Comparison BST of the active events, inserted in the AVL insertion order."""
     bst = BSTTree()
-
-    # Insert every event into both trees.
-    for event_id in raw_order:
-
-        record = state.registry.get(
-            event_id
-        )
-
-        tree.insert(
-            record.key(),
-            record
-        )
-
-        bst.insert(
-            record.key(),
-            record
-        )
-
-    state.tree = tree
-
-    return state, bst
+    for event_id in state.insertion_order:
+        record = state.registry.get(event_id)
+        if record is not None and record.state == ACTIVE:
+            bst.insert(record.key(), record)
+    return bst

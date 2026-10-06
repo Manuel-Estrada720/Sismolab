@@ -6,7 +6,7 @@ from pathlib import Path
 from src.models.event_data import EventData
 from src.models.event_record import ACTIVE, ARCHIVED, DELETED, EventRecord
 from src.models.report import Report
-from src.models.scenario_state import ScenarioState
+from src.models.scenario_state import DEFAULT_STATIONS, ScenarioState
 from src.persistence.exporter import (
     export_to_file,
     load_by_insertions,
@@ -26,7 +26,7 @@ class ScenarioPersistenceTests(unittest.TestCase):
                 data,
                 1,
                 calculate_priority(data, state.zones),
-                f"station-{event_id}",
+                DEFAULT_STATIONS[event_id % len(DEFAULT_STATIONS)],
             )
             record.state = lifecycle
             state.registry.add(record)
@@ -42,7 +42,7 @@ class ScenarioPersistenceTests(unittest.TestCase):
         add_event(4, 55, 900, ARCHIVED)
         add_event(5, 70, 900, DELETED)
         state.pending_reports.enqueue(
-            Report(EventData(6, 45, 200, 150, 150, 1300), 1, "station-6")
+            Report(EventData(6, 45, 200, 150, 150, 1300), 1, DEFAULT_STATIONS[0])
         )
         state.metrics["accepted"] = 3
         return state
