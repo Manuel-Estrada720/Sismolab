@@ -4,18 +4,13 @@ from collections import deque
 from typing import Any, Deque, List, Optional, Set, Tuple
 
 from .Node import Node
+from .comparator import compare_keys
 
 
-KeyType = Tuple[int, float, int]
+KeyType = Tuple[int, int, int]
 
-
-def _compare_keys(first: KeyType, second: KeyType) -> int:
-    """Compare event keys lexicographically without converting their values."""
-    if first < second:
-        return -1
-    if first > second:
-        return 1
-    return 0
+# Kept for older code that imported the private name
+_compare_keys = compare_keys
 
 
 class AVLTree:
@@ -122,7 +117,7 @@ class AVLTree:
         if current is None:
             return new_node, new_node
 
-        comparison = _compare_keys(new_node.getKey(), current.getKey())
+        comparison = compare_keys(new_node.getKey(), current.getKey())
         if comparison == 0:
             raise ValueError(f"Key {new_node.getKey()} already exists in the tree.")
         if comparison < 0:
@@ -146,7 +141,7 @@ class AVLTree:
 
         while current is not None:
             visited += 1
-            comparison = _compare_keys(key, current.getKey())
+            comparison = compare_keys(key, current.getKey())
             if comparison == 0:
                 return current, visited
             current = (
@@ -168,7 +163,7 @@ class AVLTree:
         if current is None:
             return None, None
 
-        comparison = _compare_keys(key, current.getKey())
+        comparison = compare_keys(key, current.getKey())
         deleted: Optional[Node] = None
 
         if comparison < 0:
@@ -220,7 +215,11 @@ class AVLTree:
             node.setRight(repair_subtree(node.getRight()))
             node.update_height()
 
-            while abs(self._balance_factor(node)) > 1:
+            # The guard stops a possible back-and-forth between two rotations.
+            # Any imbalance left here is fixed by the next pass of the outer loop.
+            guard = node.getHeight() + 2
+            while abs(self._balance_factor(node)) > 1 and guard > 0:
+                guard -= 1
                 node = self._rebalance_node(node)
                 if node.getLeft() is not None:
                     node.getLeft().update_height()
@@ -285,9 +284,9 @@ class AVLTree:
                 issues.append(f"Duplicate key {key} detected in tree.")
             seen_keys.add(key)
 
-            if minimum is not None and _compare_keys(key, minimum) <= 0:
+            if minimum is not None and compare_keys(key, minimum) <= 0:
                 issues.append(f"BST order violation: {key} <= {minimum}.")
-            if maximum is not None and _compare_keys(key, maximum) >= 0:
+            if maximum is not None and compare_keys(key, maximum) >= 0:
                 issues.append(f"BST order violation: {key} >= {maximum}.")
 
             left_height = verify(node.getLeft(), minimum, key)
