@@ -1,0 +1,95 @@
+{
+  "description": "Ráfaga para escenario_normal.json con altas, confirmaciones, conflicto, corrección con cambio de clave, reporte antiguo, eliminado rechazado y reactivación de un archivado",
+  "reports": [
+    {
+      "id": 300,
+      "magnitude": 5.1,
+      "depth": 25.0,
+      "x": 520.0,
+      "y": 450.0,
+      "time": "2026-09-07T09:30:00Z",
+      "revision": 1,
+      "station": "EST-CENTRO"
+    },
+    {
+      "id": 100,
+      "magnitude": 5.2,
+      "depth": 95.3,
+      "x": 740.2,
+      "y": 832,
+      "time": "2026-09-07T08:54:00Z",
+      "revision": 1,
+      "station": "EST-SUR"
+    },
+    {
+      "id": 100,
+      "magnitude": 5.2,
+      "depth": 95.3,
+      "x": 740.2,
+      "y": 832,
+      "time": "2026-09-07T08:54:00Z",
+      "revision": 1,
+      "station": "EST-SUR"
+    },
+    {
+      "id": 101,
+      "magnitude": 1.0,
+      "depth": 104.8,
+      "x": 779.4,
+      "y": 305,
+      "time": "2026-09-02T05:06:00Z",
+      "revision": 1,
+      "station": "EST-SUR"
+    },
+    {
+      "id": 101,
+      "magnitude": 6.6,
+      "depth": 104.8,
+      "x": 779.4,
+      "y": 305,
+      "time": "2026-09-02T05:06:00Z",
+      "revision": 2,
+      "station": "EST-NORTE"
+    },
+    {
+      "id": 101,
+      "magnitude": 7,
+      "depth": 104.8,
+      "x": 779.4,
+      "y": 305,
+      "time": "2026-09-02T05:06:00Z",
+      "revision": 1,
+      "station": "EST-ESTE"
+    },
+    {
+      "id": 301,
+      "magnitude": 3.2,
+      "depth": 5.0,
+      "x": 10.0,
+      "y": 10.0,
+      "time": "2026-09-07T11:59:00Z",
+      "revision": 4,
+      "station": "EST-OESTE"
+    },
+    {
+      "id": 120,
+      "magnitude": 7.6,
+      "depth": 75.5,
+      "x": 608.9,
+      "y": 742.5,
+      "time": "2026-09-02T00:08:00Z",
+      "revision": 2,
+      "station": "EST-SUR"
+    },
+    {
+      "id": 109,
+      "magnitude": 4.6,
+      "depth": 3.4,
+      "x": 0.8,
+      "y": 349.8,
+      "time": "2026-09-04T02:13:00Z",
+      "revision": 2,
+      "station": "EST-NORTE"
+    }
+  ]
+}
