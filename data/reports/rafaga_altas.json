@@ -1,0 +1,105 @@
+{
+  "description": "Ráfaga de altas desde las cinco estaciones (escenario vacío)",
+  "reports": [
+    {
+      "id": 500,
+      "magnitude": 5.4,
+      "depth": 54.7,
+      "x": 226.9,
+      "y": 304.9,
+      "time": "2026-09-05T11:55:00Z",
+      "station": "EST-NORTE",
+      "revision": 1
+    },
+    {
+      "id": 501,
+      "magnitude": 8.1,
+      "depth": 102.9,
+      "x": 759.7,
+      "y": 990.7,
+      "time": "2026-09-01T10:05:00Z",
+      "station": "EST-SUR",
+      "revision": 1
+    },
+    {
+      "id": 502,
+      "magnitude": 3.7,
+      "depth": 8.3,
+      "x": 620.9,
+      "y": 277.5,
+      "time": "2026-09-05T19:45:00Z",
+      "station": "EST-ESTE",
+      "revision": 1
+    },
+    {
+      "id": 503,
+      "magnitude": 5.2,
+      "depth": 32.1,
+      "x": 275.9,
+      "y": 389.9,
+      "time": "2026-09-06T13:03:00Z",
+      "station": "EST-OESTE",
+      "revision": 1
+    },
+    {
+      "id": 504,
+      "magnitude": 0.9,
+      "depth": 12.9,
+      "x": 628.5,
+      "y": 166.5,
+      "time": "2026-09-02T16:58:00Z",
+      "station": "EST-CENTRO",
+      "revision": 1
+    },
+    {
+      "id": 505,
+      "magnitude": 3.2,
+      "depth": 45.9,
+      "x": 691.0,
+      "y": 143.7,
+      "time": "2026-09-02T21:49:00Z",
+      "station": "EST-NORTE",
+      "revision": 1
+    },
+    {
+      "id": 506,
+      "magnitude": 2.9,
+      "depth": 57.5,
+      "x": 559.7,
+      "y": 70.7,
+      "time": "2026-09-02T12:12:00Z",
+      "station": "EST-SUR",
+      "revision": 1
+    },
+    {
+      "id": 507,
+      "magnitude": 8.5,
+      "depth": 11.2,
+      "x": 620.6,
+      "y": 805.6,
+      "time": "2026-09-01T13:08:00Z",
+      "station": "EST-ESTE",
+      "revision": 1
+    },
+    {
+      "id": 508,
+      "magnitude": -0.2,
+      "depth": 22.9,
+      "x": 977.8,
+      "y": 6.3,
+      "time": "2026-09-02T13:07:00Z",
+      "station": "EST-OESTE",
+      "revision": 1
+    },
+    {
+      "id": 509,
+      "magnitude": 6.9,
+      "depth": 67.6,
+      "x": 13.5,
+      "y": 136.8,
+      "time": "2026-09-02T06:08:00Z",
+      "station": "EST-CENTRO",
+      "revision": 1
+    }
+  ]
+}
