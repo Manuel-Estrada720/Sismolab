@@ -1,0 +1,283 @@
+{
+  "events": [
+    {
+      "id": 1,
+      "magnitude": 2.0,
+      "depth": 21.1,
+      "x": 648.9,
+      "y": 784.5,
+      "time": "2026-09-02T09:09:00Z",
+      "station": "EST-NORTE"
+    },
+    {
+      "id": 2,
+      "magnitude": 2.1,
+      "depth": 4.0,
+      "x": 657.9,
+      "y": 900.1,
+      "time": "2026-09-01T02:58:00Z",
+      "station": "EST-SUR"
+    },
+    {
+      "id": 3,
+      "magnitude": 2.2,
+      "depth": 45.4,
+      "x": 852.5,
+      "y": 879.2,
+      "time": "2026-09-03T01:23:00Z",
+      "station": "EST-ESTE"
+    },
+    {
+      "id": 4,
+      "magnitude": 2.3,
+      "depth": 21.7,
+      "x": 428.8,
+      "y": 351.2,
+      "time": "2026-09-03T05:59:00Z",
+      "station": "EST-OESTE"
+    },
+    {
+      "id": 5,
+      "magnitude": 2.4,
+      "depth": 53.3,
+      "x": 445.2,
+      "y": 316.9,
+      "time": "2026-09-01T20:10:00Z",
+      "station": "EST-CENTRO"
+    },
+    {
+      "id": 6,
+      "magnitude": 2.5,
+      "depth": 76.2,
+      "x": 142.0,
+      "y": 992.6,
+      "time": "2026-09-03T09:21:00Z",
+      "station": "EST-NORTE"
+    },
+    {
+      "id": 7,
+      "magnitude": 2.6,
+      "depth": 103.6,
+      "x": 407.7,
+      "y": 291.2,
+      "time": "2026-09-06T12:15:00Z",
+      "station": "EST-SUR"
+    },
+    {
+      "id": 8,
+      "magnitude": 2.7,
+      "depth": 18.2,
+      "x": 897.2,
+      "y": 491.9,
+      "time": "2026-09-04T08:00:00Z",
+      "station": "EST-ESTE"
+    },
+    {
+      "id": 9,
+      "magnitude": 2.8,
+      "depth": 63.8,
+      "x": 832.9,
+      "y": 319.6,
+      "time": "2026-09-03T18:26:00Z",
+      "station": "EST-OESTE"
+    },
+    {
+      "id": 10,
+      "magnitude": 2.9,
+      "depth": 59.0,
+      "x": 706.2,
+      "y": 739.5,
+      "time": "2026-09-04T19:10:00Z",
+      "station": "EST-CENTRO"
+    },
+    {
+      "id": 11,
+      "magnitude": 3.0,
+      "depth": 53.1,
+      "x": 70.8,
+      "y": 132.8,
+      "time": "2026-09-02T09:02:00Z",
+      "station": "EST-NORTE"
+    },
+    {
+      "id": 12,
+      "magnitude": 3.1,
+      "depth": 57.4,
+      "x": 850.1,
+      "y": 875.9,
+      "time": "2026-09-04T20:41:00Z",
+      "station": "EST-SUR"
+    },
+    {
+      "id": 13,
+      "magnitude": 3.2,
+      "depth": 70.2,
+      "x": 237.6,
+      "y": 320.4,
+      "time": "2026-09-04T22:04:00Z",
+      "station": "EST-ESTE"
+    },
+    {
+      "id": 14,
+      "magnitude": 3.3,
+      "depth": 90.3,
+      "x": 452.6,
+      "y": 300.9,
+      "time": "2026-09-04T06:22:00Z",
+      "station": "EST-OESTE"
+    },
+    {
+      "id": 15,
+      "magnitude": 3.4,
+      "depth": 65.6,
+      "x": 915.0,
+      "y": 325.5,
+      "time": "2026-09-04T23:57:00Z",
+      "station": "EST-CENTRO"
+    },
+    {
+      "id": 16,
+      "magnitude": 3.5,
+      "depth": 12.6,
+      "x": 374.9,
+      "y": 454.6,
+      "time": "2026-09-03T03:48:00Z",
+      "station": "EST-NORTE"
+    },
+    {
+      "id": 17,
+      "magnitude": 3.6,
+      "depth": 48.6,
+      "x": 200.1,
+      "y": 542.4,
+      "time": "2026-09-05T19:59:00Z",
+      "station": "EST-SUR"
+    },
+    {
+      "id": 18,
+      "magnitude": 3.7,
+      "depth": 94.0,
+      "x": 42.0,
+      "y": 70.1,
+      "time": "2026-09-02T09:22:00Z",
+      "station": "EST-ESTE"
+    },
+    {
+      "id": 19,
+      "magnitude": 3.8,
+      "depth": 58.5,
+      "x": 535.9,
+      "y": 29.7,
+      "time": "2026-09-06T02:20:00Z",
+      "station": "EST-OESTE"
+    },
+    {
+      "id": 20,
+      "magnitude": 3.9,
+      "depth": 31.3,
+      "x": 672.4,
+      "y": 127.3,
+      "time": "2026-09-03T10:18:00Z",
+      "station": "EST-CENTRO"
+    },
+    {
+      "id": 21,
+      "magnitude": 4.0,
+      "depth": 90.9,
+      "x": 478.4,
+      "y": 223.5,
+      "time": "2026-09-05T06:16:00Z",
+      "station": "EST-NORTE"
+    },
+    {
+      "id": 22,
+      "magnitude": 4.1,
+      "depth": 32.5,
+      "x": 542.8,
+      "y": 938.9,
+      "time": "2026-09-04T19:00:00Z",
+      "station": "EST-SUR"
+    },
+    {
+      "id": 23,
+      "magnitude": 4.2,
+      "depth": 93.1,
+      "x": 277.8,
+      "y": 598.3,
+      "time": "2026-09-03T01:50:00Z",
+      "station": "EST-ESTE"
+    },
+    {
+      "id": 24,
+      "magnitude": 4.3,
+      "depth": 59.4,
+      "x": 936.2,
+      "y": 159.0,
+      "time": "2026-09-07T05:28:00Z",
+      "station": "EST-OESTE"
+    },
+    {
+      "id": 25,
+      "magnitude": 4.4,
+      "depth": 42.5,
+      "x": 186.1,
+      "y": 97.2,
+      "time": "2026-09-02T13:03:00Z",
+      "station": "EST-CENTRO"
+    },
+    {
+      "id": 26,
+      "magnitude": 4.5,
+      "depth": 34.5,
+      "x": 975.7,
+      "y": 245.1,
+      "time": "2026-09-01T23:38:00Z",
+      "station": "EST-NORTE"
+    },
+    {
+      "id": 27,
+      "magnitude": 4.6,
+      "depth": 100.4,
+      "x": 954.6,
+      "y": 408.0,
+      "time": "2026-09-01T17:20:00Z",
+      "station": "EST-SUR"
+    },
+    {
+      "id": 28,
+      "magnitude": 4.7,
+      "depth": 108.3,
+      "x": 479.8,
+      "y": 670.6,
+      "time": "2026-09-01T03:41:00Z",
+      "station": "EST-ESTE"
+    },
+    {
+      "id": 29,
+      "magnitude": 4.8,
+      "depth": 41.3,
+      "x": 396.2,
+      "y": 718.9,
+      "time": "2026-09-02T15:26:00Z",
+      "station": "EST-OESTE"
+    },
+    {
+      "id": 30,
+      "magnitude": 4.9,
+      "depth": 44.8,
+      "x": 690.1,
+      "y": 726.6,
+      "time": "2026-09-04T01:15:00Z",
+      "station": "EST-CENTRO"
+    },
+    {
+      "id": 31,
+      "magnitude": 5.0,
+      "depth": 44.1,
+      "x": 816.8,
+      "y": 307.5,
+      "time": "2026-09-06T13:02:00Z",
+      "station": "EST-NORTE"
+    }
+  ]
+}

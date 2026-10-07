@@ -1,0 +1,49 @@
+{
+  "events": [
+    {
+      "id": 1,
+      "magnitude": 1.2,
+      "depth": 52.2,
+      "x": 193.1,
+      "y": 811.7,
+      "time": "2026-09-05T02:48:00Z",
+      "station": "EST-NORTE"
+    },
+    {
+      "id": 2,
+      "magnitude": 5.2,
+      "depth": 77.7,
+      "x": 343.9,
+      "y": 153.7,
+      "time": "2026-09-04T20:31:00Z",
+      "station": "EST-SUR"
+    },
+    {
+      "id": 3,
+      "magnitude": -0.2,
+      "depth": 88.6,
+      "x": 995.2,
+      "y": 3.4,
+      "time": "2026-09-07T06:44:00Z",
+      "station": "EST-ESTE"
+    },
+    {
+      "id": 4,
+      "magnitude": 5.2,
+      "depth": 46.8,
+      "x": 968.5,
+      "y": 167.4,
+      "time": "2026-09-03T23:57:00Z",
+      "station": "EST-OESTE"
+    },
+    {
+      "id": 5,
+      "magnitude": 3.5,
+      "depth": 5.2,
+      "x": 887.0,
+      "y": 15.0,
+      "time": "2026-09-01T00:56:00Z",
+      "station": "EST-CENTRO"
+    }
+  ]
+}
