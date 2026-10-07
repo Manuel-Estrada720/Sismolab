@@ -25,3 +25,5 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+# Deliverables sent by email, never committed (manuals, AI report)
+docs_entrega/

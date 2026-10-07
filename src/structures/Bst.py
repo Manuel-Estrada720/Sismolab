@@ -1,528 +1,345 @@
+"""Binary search tree WITHOUT balancing. It is used to compare against the AVL.
+
+It uses the same Node class and the same key comparator as the AVL, so both
+trees order the events in exactly the same way.
+"""
 
 from .Node import Node
-from typing import Optional, Tuple, Any
+from .comparator import compare_keys
 
 
 class BSTTree:
 
     def __init__(self):
         self.root = None
+        self._size = 0
 
+    # INSERT
 
-    
+    # Public insert method. Returns the new node.
+    # A repeated key raises ValueError (the tree never holds duplicates).
     def insert(self, key, event):
 
         node = Node(key, event)
 
         if self.root is None:
-
             self.root = node
+            self._size += 1
+            return node
 
-            print(
-                "Key ", key,
-                " was inserted as the root of the tree"
-            )
+        self._insert(node, self.root)
+        self._size += 1
+        return node
 
-        else:
-
-            self._insert(
-                node,
-                self.root
-            )
-
-
-    
+    # Private insert method. It walks down with a loop instead of recursion,
+    # so a degenerate tree (ascending keys) does not hit Python's recursion limit.
     def _insert(self, node, current_root):
 
-        
-        if current_root.getKey() == node.getKey():
+        current = current_root
 
-            print(
-                "A node with key ",
-                node.getKey(),
-                " already exists"
-            )
+        while True:
 
-        else:
+            comparison = compare_keys(node.getKey(), current.getKey())
 
-            
-            if node.getKey() < current_root.getKey():
+            if comparison == 0:
+                raise ValueError(
+                    "A node with key " + str(node.getKey()) + " already exists"
+                )
 
-                left = current_root.getLeft()
+            if comparison < 0:
 
-                if left is None:
+                if current.getLeft() is None:
+                    current.setLeft(node)
+                    return
+                current = current.getLeft()
 
-                    current_root.setLeft(node)
-
-                    print(
-                        node.getKey(),
-                        " was inserted as the left child of ",
-                        current_root.getKey()
-                    )
-
-                else:
-
-                    self._insert(
-                        node,
-                        left
-                    )
-
-
-            
             else:
 
-                right = current_root.getRight()
+                if current.getRight() is None:
+                    current.setRight(node)
+                    return
+                current = current.getRight()
 
-                if right is None:
-
-                    current_root.setRight(node)
-
-                    print(
-                        node.getKey(),
-                        " was inserted as the right child of ",
-                        current_root.getKey()
-                    )
-
-                else:
-
-                    self._insert(
-                        node,
-                        right
-                    )
-
-
-    
     # SEARCH
-    
 
-    # Public search method
+    # Public search method.
+    # Returns (node, visited): the node (or None) and how many nodes were compared.
     def search(self, key):
 
+        current = self.root
+        visited = 0
+
+        while current is not None:
+
+            visited += 1
+            comparison = compare_keys(key, current.getKey())
+
+            if comparison == 0:
+                return current, visited
+
+            if comparison < 0:
+                current = current.getLeft()
+            else:
+                current = current.getRight()
+
+        return None, visited
+
+    # SIZE, HEIGHT, LEAVES AND DEPTH
+
+    def size(self):
+        return self._size
+
+    # Height of the empty tree is -1 and height of a leaf is 0
+    def height(self):
+        return self._height(self.root)
+
+    def _height(self, current_root):
+
+        if current_root is None:
+            return -1
+
+        # Breadth-first walk, level by level
+        level = [current_root]
+        height = -1
+
+        while len(level) > 0:
+
+            height += 1
+            next_level = []
+
+            for node in level:
+                if node.getLeft() is not None:
+                    next_level.append(node.getLeft())
+                if node.getRight() is not None:
+                    next_level.append(node.getRight())
+
+            level = next_level
+
+        return height
+
+    # The deepest node has depth equal to the tree height
+    def max_depth(self):
+        return self.height()
+
+    def count_leaves(self):
+
+        leaves = 0
+
+        for node in self.preorder():
+            if node.getLeft() is None and node.getRight() is None:
+                leaves += 1
+
+        return leaves
+
+    # Depth of every node: {id(node): depth}. The root has depth 0.
+    def depths(self):
+
+        result = {}
+
         if self.root is None:
+            return result
 
-            print("The tree is empty")
+        stack = [(self.root, 0)]
 
-            return None
+        while len(stack) > 0:
 
-        else:
+            node, depth = stack.pop()
+            result[id(node)] = depth
 
-            return self._search(
-                key,
-                self.root
-            )
+            if node.getLeft() is not None:
+                stack.append((node.getLeft(), depth + 1))
+            if node.getRight() is not None:
+                stack.append((node.getRight(), depth + 1))
 
-
-    # Private search method
-    def _search(self, key, current_root):
-
-        if key == current_root.getKey():
-
-            return current_root
-
-
-        if key < current_root.getKey():
-
-            left = current_root.getLeft()
-
-            if left is None:
-
-                return None
-
-            else:
-
-                return self._search(
-                    key,
-                    left
-                )
-
-
-        else:
-
-            right = current_root.getRight()
-
-            if right is None:
-
-                return None
-
-            else:
-
-                return self._search(
-                    key,
-                    right
-                )
-
+        return result
 
     # BREADTH-FIRST TRAVERSAL
 
     def breadth_first(self):
 
         if self.root is None:
-
-            print("The tree is empty")
-
             return []
 
-        else:
-
-            return self._breadth_first(
-                self.root
-            )
-
+        return self._breadth_first(self.root)
 
     def _breadth_first(self, current_root):
 
-        queue = []
+        queue = [current_root]
         traversal = []
+        position = 0
 
-        queue.append(current_root)
+        # The list works as a queue: "position" points to the next node to visit
+        while position < len(queue):
 
-        while len(queue) > 0:
-
-            node = queue.pop(0)
-
+            node = queue[position]
+            position += 1
             traversal.append(node)
 
             if node.getLeft() is not None:
-
-                queue.append(
-                    node.getLeft()
-                )
+                queue.append(node.getLeft())
 
             if node.getRight() is not None:
-
-                queue.append(
-                    node.getRight()
-                )
+                queue.append(node.getRight())
 
         return traversal
-
 
     # PREORDER TRAVERSAL
     # root - left - right
 
     def preorder(self):
 
+        traversal = []
+
         if self.root is None:
+            return traversal
 
-            print("The tree is empty")
+        stack = [self.root]
 
-        else:
+        while len(stack) > 0:
 
-            self._preorder(
-                self.root
-            )
+            node = stack.pop()
+            traversal.append(node)
 
+            # Right first so the left child is visited first
+            if node.getRight() is not None:
+                stack.append(node.getRight())
+            if node.getLeft() is not None:
+                stack.append(node.getLeft())
 
-    def _preorder(self, current_root):
-
-        if current_root is not None:
-
-            print(
-                current_root.getKey()
-            )
-
-            self._preorder(
-                current_root.getLeft()
-            )
-
-            self._preorder(
-                current_root.getRight()
-            )
-
+        return traversal
 
     # INORDER TRAVERSAL
     # left - root - right
 
     def inorder(self):
 
-        if self.root is None:
+        traversal = []
+        stack = []
+        current = self.root
 
-            print("The tree is empty")
+        while current is not None or len(stack) > 0:
 
-        else:
+            while current is not None:
+                stack.append(current)
+                current = current.getLeft()
 
-            self._inorder(
-                self.root
-            )
+            current = stack.pop()
+            traversal.append(current)
+            current = current.getRight()
 
-
-    def _inorder(self, current_root):
-
-        if current_root is not None:
-
-            self._inorder(
-                current_root.getLeft()
-            )
-
-            print(
-                current_root.getKey()
-            )
-
-            self._inorder(
-                current_root.getRight()
-            )
-
+        return traversal
 
     # POSTORDER TRAVERSAL
     # left - right - root
 
     def postorder(self):
 
+        traversal = []
+
         if self.root is None:
+            return traversal
 
-            print("The tree is empty")
+        stack = [self.root]
 
-        else:
+        while len(stack) > 0:
 
-            self._postorder(
-                self.root
-            )
+            node = stack.pop()
+            traversal.append(node)
 
+            if node.getLeft() is not None:
+                stack.append(node.getLeft())
+            if node.getRight() is not None:
+                stack.append(node.getRight())
 
-    def _postorder(self, current_root):
-
-        if current_root is not None:
-
-            self._postorder(
-                current_root.getLeft()
-            )
-
-            self._postorder(
-                current_root.getRight()
-            )
-
-            print(
-                current_root.getKey()
-            )
-
+        # root-right-left reversed is left-right-root
+        traversal.reverse()
+        return traversal
 
     # DELETE
 
-    # Public delete method
+    # Public delete method. Returns the deleted node or None if the key is absent.
     def delete(self, key):
 
-        if self.root is None:
+        parent = None
+        node = self.root
 
-            print("The tree is empty")
+        # Find the node and remember its parent
+        while node is not None:
 
-        else:
+            comparison = compare_keys(key, node.getKey())
 
-            node = self.search(key)
+            if comparison == 0:
+                break
 
-            if node is None:
+            parent = node
 
-                print(
-                    "There is no node with key ",
-                    key
-                )
-
+            if comparison < 0:
+                node = node.getLeft()
             else:
+                node = node.getRight()
 
-                self._delete(node)
+        if node is None:
+            return None
 
-                print(
-                    "Node with key ",
-                    key,
-                    " was deleted"
-                )
+        removed = Node(node.getKey(), node.getEvent())
+        self._delete(node, parent)
+        self._size -= 1
+        return removed
 
-
-    # Private delete method
-    def _delete(self, node):
-
-        # CASE 1
-        # The node is a leaf
-
-        if (
-            node.getLeft() is None
-            and
-            node.getRight() is None
-        ):
-
-            if node == self.root:
-
-                self.root = None
-
-            else:
-
-                parent = self._get_parent(node)
-
-                if parent.getLeft() == node:
-
-                    parent.setLeft(None)
-
-                else:
-
-                    parent.setRight(None)
-
-            return
-
-
-        # CASE 2
-        # The node only has a right child
-
-        if node.getLeft() is None:
-
-            child = node.getRight()
-
-            if node == self.root:
-
-                self.root = child
-
-            else:
-
-                parent = self._get_parent(node)
-
-                if parent.getLeft() == node:
-
-                    parent.setLeft(child)
-
-                else:
-
-                    parent.setRight(child)
-
-            return
-
-
-        # CASE 2
-        # The node only has a left child
-
-        if node.getRight() is None:
-
-            child = node.getLeft()
-
-            if node == self.root:
-
-                self.root = child
-
-            else:
-
-                parent = self._get_parent(node)
-
-                if parent.getLeft() == node:
-
-                    parent.setLeft(child)
-
-                else:
-
-                    parent.setRight(child)
-
-            return
-
+    # Private delete method. "parent" is None when node is the root.
+    def _delete(self, node, parent):
 
         # CASE 3
         # The node has two children
         #
-        # We use the predecessor
+        # We use the predecessor (the largest node of the left subtree)
 
-        predecessor = self._get_predecessor(node)
+        if node.getLeft() is not None and node.getRight() is not None:
 
-        # Copy the predecessor data
-        node.setKey(
-            predecessor.getKey()
-        )
+            predecessor_parent = node
+            predecessor = node.getLeft()
 
-        node.setEvent(
-            predecessor.getEvent()
-        )
+            while predecessor.getRight() is not None:
+                predecessor_parent = predecessor
+                predecessor = predecessor.getRight()
 
-        # Delete the predecessor
-        self._delete(
-            predecessor
-        )
+            # Copy the predecessor data
+            node.setKey(predecessor.getKey())
+            node.setEvent(predecessor.getEvent())
 
+            # Delete the predecessor. It has no right child, so it is case 1 or 2
+            self._delete(predecessor, predecessor_parent)
+            return
 
-    # GET PARENT
+        # CASE 1 and CASE 2
+        # The node is a leaf or has only one child
 
-    def _get_parent(self, node):
+        if node.getLeft() is not None:
+            child = node.getLeft()
+        else:
+            child = node.getRight()
 
-        if node == self.root:
+        if parent is None:
+            self.root = child
+        elif parent.getLeft() is node:
+            parent.setLeft(child)
+        else:
+            parent.setRight(child)
 
-            return None
-
-        current = self.root
-
-        while current is not None:
-
-            if (
-                current.getLeft() == node
-                or
-                current.getRight() == node
-            ):
-
-                return current
-
-            if node.getKey() < current.getKey():
-
-                current = current.getLeft()
-
-            else:
-
-                current = current.getRight()
-
-        return None
-
-
-    # GET PREDECESSOR
-    #
-    # Returns the largest node
-    # from the left subtree
-
-    def _get_predecessor(self, node):
-
-        current = node.getLeft()
-
-        while current.getRight() is not None:
-
-            current = current.getRight()
-
-        return current
-
-
-    # DRAW
+    # DRAW (only for debugging in the console)
 
     def draw(self):
 
         if self.root is None:
-
             print("The tree is empty")
-
         else:
-
             print("\nBinary Search Tree:")
             print("-------------------")
+            self._draw(self.root, "", "R")
 
-            self._draw(
-                self.root,
-                "",
-                "R"
-            )
-
-
-    def _draw(
-        self,
-        current_root,
-        space,
-        position
-    ):
+    def _draw(self, current_root, space, position):
 
         if current_root is not None:
-
-            self._draw(
-                current_root.getRight(),
-                space + "     ",
-                "R"
-            )
-
-            print(
-                space +
-                position +
-                "── " +
-                str(current_root.getKey())
-            )
-
-            self._draw(
-                current_root.getLeft(),
-                space + "     ",
-                "L"
-            )
+            self._draw(current_root.getRight(), space + "     ", "R")
+            print(space + position + "── " + str(current_root.getKey()))
+            self._draw(current_root.getLeft(), space + "     ", "L")
