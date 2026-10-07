@@ -1,0 +1,2 @@
+# SismoLab AVL solo usa la biblioteca estándar de Python (incluye Tkinter).
+# No hay dependencias que instalar.
